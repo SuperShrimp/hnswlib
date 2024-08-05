@@ -177,7 +177,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     inline std::mutex& getLabelOpMutex(labeltype label) const {
         // calculate hash
+        //MAX_LABEL_OPERATION_LOCKS = 65536
         size_t lock_id = label & (MAX_LABEL_OPERATION_LOCKS - 1);
+        //大概是返回一个id？
         return label_op_locks_[lock_id];
     }
 
@@ -958,15 +960,21 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         // lock all operations with element by label
         std::unique_lock <std::mutex> lock_label(getLabelOpMutex(label));
+        //replace_delete = false: update a new point
         if (!replace_deleted) {
+        //从最底层开始添加point?
             addPoint(data_point, label, -1);
             return;
         }
         // check if there is vacant place
         tableint internal_id_replaced;
+        //锁定deleted_elements
         std::unique_lock <std::mutex> lock_deleted_elements(deleted_elements_lock);
+
+        //判断是否有空余位置
         bool is_vacant_place = !deleted_elements.empty();
         if (is_vacant_place) {
+            //有空余位置
             internal_id_replaced = *deleted_elements.begin();
             deleted_elements.erase(internal_id_replaced);
         }
@@ -975,6 +983,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         // if there is no vacant place then add or update point
         // else add point to vacant place
         if (!is_vacant_place) {
+            //no vacant place
             addPoint(data_point, label, -1);
         } else {
             // we assume that there are no concurrent operations on deleted element
@@ -1138,7 +1147,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         }
     }
 
-
+   //level=-1？
     std::vector<tableint> getConnectionsWithLock(tableint internalId, int level) {
         std::unique_lock <std::mutex> lock(link_list_locks_[internalId]);
         unsigned int *data = get_linklist_at_level(internalId, level);
