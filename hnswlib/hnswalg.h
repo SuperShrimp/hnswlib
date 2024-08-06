@@ -57,6 +57,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     void *dist_func_param_{nullptr};
 
     mutable std::mutex label_lookup_lock;  // lock for label_lookup_
+    //键值对为labeltype, tableint的unordered_map label_lookup_
     std::unordered_map<labeltype, tableint> label_lookup_;
 
     std::default_random_engine level_generator_;
@@ -174,15 +175,17 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         ef_ = ef;
     }
 
-
+//const: Indicates that this function does not modify any member variables of the class.
     inline std::mutex& getLabelOpMutex(labeltype label) const {
-        // calculate hash
+        // calculate hash by performing a bitwise AND operation between the label and (MAX_LABEL_OPERATION_LOCKS - 1).
         size_t lock_id = label & (MAX_LABEL_OPERATION_LOCKS - 1);
+        //if label, max_label_operations_locks-1>0, lockid=1
         return label_op_locks_[lock_id];
     }
 
 
     inline labeltype getExternalLabel(tableint internal_id) const {
+        //label所在的位置： level0占用的内存(最低层，所有点都有)+当前label的位置*每个元素的大小+label偏置
         labeltype return_label;
         memcpy(&return_label, (data_level0_memory_ + internal_id * size_data_per_element_ + label_offset_), sizeof(labeltype));
         return return_label;
@@ -956,18 +959,26 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             throw std::runtime_error("Replacement of deleted elements is disabled in constructor");
         }
 
-        // lock all operations with element by label
+        // lock all operations with element by label, lock_label=0 or 1
         std::unique_lock <std::mutex> lock_label(getLabelOpMutex(label));
+        //if replace_deleted = false, 在level=-1?添加data_point
         if (!replace_deleted) {
             addPoint(data_point, label, -1);
             return;
         }
+        //需要替换删除点的情况下
+
         // check if there is vacant place
         tableint internal_id_replaced;
         std::unique_lock <std::mutex> lock_deleted_elements(deleted_elements_lock);
+        //deleted_elements unempty-> is_vacant_space_ true
         bool is_vacant_place = !deleted_elements.empty();
+        //我觉得这个地方是因为每个点能链接的点是有上限的，如果有合适的位置就直接插入？
         if (is_vacant_place) {
+            //f there is a vacant place, the place of the first element from deleted_elements is taken,
+            // and internal_id_replaced is set to this element.
             internal_id_replaced = *deleted_elements.begin();
+            //delete the place from deleted_elements list.
             deleted_elements.erase(internal_id_replaced);
         }
         lock_deleted_elements.unlock();
@@ -975,17 +986,24 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         // if there is no vacant place then add or update point
         // else add point to vacant place
         if (!is_vacant_place) {
+            //没有空缺位置，添加点。
+            //不需要替换其他点。
             addPoint(data_point, label, -1);
         } else {
             // we assume that there are no concurrent operations on deleted element
+            //update label_replaced with internal_id_replaced
+            //label_repalced是internal_id_replaced的全局id
             labeltype label_replaced = getExternalLabel(internal_id_replaced);
+            //internal_id应该是当前层内的id，但不是全局id，所以需要获取全局id，从label的位置向internal的全局id的位置copy数据
             setExternalLabel(internal_id_replaced, label);
 
             std::unique_lock <std::mutex> lock_table(label_lookup_lock);
+            //删除label_replaced指定键值对
             label_lookup_.erase(label_replaced);
+            //label的位置是应该被删掉的数据
             label_lookup_[label] = internal_id_replaced;
             lock_table.unlock();
-
+            //删除标记？
             unmarkDeletedInternal(internal_id_replaced);
             updatePoint(data_point, internal_id_replaced, 1.0);
         }
@@ -1156,10 +1174,15 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             // Checking if the element with the same label already exists
             // if so, updating it *instead* of creating a new element.
             std::unique_lock <std::mutex> lock_table(label_lookup_lock);
+            //lookup就是查询要用的大表
             auto search = label_lookup_.find(label);
+            //找到了对应的label
             if (search != label_lookup_.end()) {
+                //键值对的值
                 tableint existingInternalId = search->second;
+                //是否需要填补删除的值，允许删除取代元素
                 if (allow_replace_deleted_) {
+                    //查询当前的值是否标记删除
                     if (isMarkedDeleted(existingInternalId)) {
                         throw std::runtime_error("Can't use addPoint to update deleted elements if replacement of deleted elements is enabled.");
                     }
@@ -1167,51 +1190,62 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 lock_table.unlock();
 
                 if (isMarkedDeleted(existingInternalId)) {
+                    //取消标记
                     unmarkDeletedInternal(existingInternalId);
                 }
+                //更新点的id?
                 updatePoint(data_point, existingInternalId, 1.0);
-
+                //返回
                 return existingInternalId;
             }
-
+            //没有找到对应点
             if (cur_element_count >= max_elements_) {
                 throw std::runtime_error("The number of elements exceeds the specified limit");
             }
-
+            //当前点的计数（<最大计数）
             cur_c = cur_element_count;
             cur_element_count++;
+            //label对应的点的索引就是cur_c
             label_lookup_[label] = cur_c;
         }
 
         std::unique_lock <std::mutex> lock_el(link_list_locks_[cur_c]);
+        //所在的level是随机取一个level?
         int curlevel = getRandomLevel(mult_);
+        //如果指定level，那就插入到指定level的地方。
         if (level > 0)
             curlevel = level;
 
         element_levels_[cur_c] = curlevel;
 
         std::unique_lock <std::mutex> templock(global);
+        //当前的level不能超过最大level
         int maxlevelcopy = maxlevel_;
         if (curlevel <= maxlevelcopy)
             templock.unlock();
+        //设定进入点为当前点
         tableint currObj = enterpoint_node_;
         tableint enterpoint_copy = enterpoint_node_;
-
+        //字符串第一个元素所在的空间清零
         memset(data_level0_memory_ + cur_c * size_data_per_element_ + offsetLevel0_, 0, size_data_per_element_);
 
         // Initialisation of the data and label
         memcpy(getExternalLabeLp(cur_c), &label, sizeof(labeltype));
         memcpy(getDataByInternalId(cur_c), data_point, data_size_);
-
-        if (curlevel) {
+        //curlevel!=0
+        if (curlevel)
+        {
+            //在linlists中为当前索引分配空间
             linkLists_[cur_c] = (char *) malloc(size_links_per_element_ * curlevel + 1);
             if (linkLists_[cur_c] == nullptr)
                 throw std::runtime_error("Not enough memory: addPoint failed to allocate linklist");
+            //空间内清零
             memset(linkLists_[cur_c], 0, size_links_per_element_ * curlevel + 1);
         }
 
         if ((signed)currObj != -1) {
             if (curlevel < maxlevelcopy) {
+                //计算目标点与初入点的距离
                 dist_t curdist = fstdistfunc_(data_point, getDataByInternalId(currObj), dist_func_param_);
                 for (int level = maxlevelcopy; level > curlevel; level--) {
                     bool changed = true;
@@ -1219,14 +1253,17 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                         changed = false;
                         unsigned int *data;
                         std::unique_lock <std::mutex> lock(link_list_locks_[currObj]);
+                        //寻找与当前点链接的点
                         data = get_linklist(currObj, level);
                         int size = getListCount(data);
 
                         tableint *datal = (tableint *) (data + 1);
                         for (int i = 0; i < size; i++) {
+                            //把链接点注册为candidate
                             tableint cand = datal[i];
                             if (cand < 0 || cand > max_elements_)
                                 throw std::runtime_error("cand error");
+                            //计算candidate和目标点之间的距离，如果更近就更新candidate为当前点。
                             dist_t d = fstdistfunc_(data_point, getDataByInternalId(cand), dist_func_param_);
                             if (d < curdist) {
                                 curdist = d;
@@ -1271,28 +1308,34 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     searchKnn(const void *query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr) const {
         std::priority_queue<std::pair<dist_t, labeltype >> result;
         if (cur_element_count == 0) return result;
-
+        //设置进入点为当前点
         tableint currObj = enterpoint_node_;
+        //fstdistfunc = L2sql 初始化当前距离curdist
         dist_t curdist = fstdistfunc_(query_data, getDataByInternalId(enterpoint_node_), dist_func_param_);
-
+        //当前maxlevel_=3，每次层数降低
+        //The inner loop continues moving to closer neighbors until no closer neighbor is found
         for (int level = maxlevel_; level > 0; level--) {
             bool changed = true;
+            //如果在当前层找到更近的点，循环继续；如果找不到，进入下一层。保留当前最近点信息
             while (changed) {
                 changed = false;
                 unsigned int *data;
-
+                //获取当前level节点的关联信息
                 data = (unsigned int *) get_linklist(currObj, level);
+                //获取关联信息的内存大小
                 int size = getListCount(data);
                 metric_hops++;
                 metric_distance_computations+=size;
-
+                //datal存储的应该是索引值，索引不可以<0或者>max_elements
                 tableint *datal = (tableint *) (data + 1);
                 for (int i = 0; i < size; i++) {
+                    //和data有联系的点都是candidate
                     tableint cand = datal[i];
                     if (cand < 0 || cand > max_elements_)
                         throw std::runtime_error("cand error");
+                    //计算candidate和query之间的距离
                     dist_t d = fstdistfunc_(query_data, getDataByInternalId(cand), dist_func_param_);
-
+                    //如果找到更加合适的点，完成本次搜索。
                     if (d < curdist) {
                         curdist = d;
                         currObj = cand;

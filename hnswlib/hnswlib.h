@@ -199,11 +199,14 @@ class AlgorithmInterface {
     virtual ~AlgorithmInterface(){
     }
 };
-
+//declares template for AlgorithmInterface
 template<typename dist_t>
+//Return Type: The function searchKnnCloserFirst returns a std::vector of std::pairs.
 std::vector<std::pair<dist_t, labeltype>>
+//This line declares a member function of the class template AlgorithmInterface:
 AlgorithmInterface<dist_t>::searchKnnCloserFirst(const void* query_data, size_t k,
                                                  BaseFilterFunctor* isIdAllowed) const {
+    //Initialize an empty vector named result which will store the pairs of distances and labels.
     std::vector<std::pair<dist_t, labeltype>> result;
 
     // here searchKnn returns the result in the order of further first
