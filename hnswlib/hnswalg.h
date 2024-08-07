@@ -227,31 +227,42 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
     searchBaseLayer(tableint ep_id, const void *data_point, int layer) {
         VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+        //跟踪已访问的节点
         vl_type *visited_array = vl->mass;
+        //当前搜索迭代中标记节点的唯一标签
         vl_type visited_array_tag = vl->curV;
-
+        //目前找到的最佳candidate
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+        //存储要探索的候选者
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidateSet;
 
         dist_t lowerBound;
+        //当前索引curr_obj没有被标记为删除
         if (!isMarkedDeleted(ep_id)) {
+            //计算目标数据与当前点之间的距离
             dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
+            //将距离信息和索引信息添加到两个队列中
             top_candidates.emplace(dist, ep_id);
             lowerBound = dist;
             candidateSet.emplace(-dist, ep_id);
         } else {
+            //标记为删除，则将lowebound标记为可能的最大距离
             lowerBound = std::numeric_limits<dist_t>::max();
             candidateSet.emplace(-lowerBound, ep_id);
         }
+        //将当前索引标记为visited
         visited_array[ep_id] = visited_array_tag;
 
         while (!candidateSet.empty()) {
+            //取出顶层元素
             std::pair<dist_t, tableint> curr_el_pair = candidateSet.top();
+            //如果距离大于lowerbound并且top队列已满，退出循环
             if ((-curr_el_pair.first) > lowerBound && top_candidates.size() == ef_construction_) {
                 break;
             }
+            //弹出最顶层元素
             candidateSet.pop();
-
+            //当前点的索引
             tableint curNodeNum = curr_el_pair.second;
 
             std::unique_lock <std::mutex> lock(link_list_locks_[curNodeNum]);
@@ -260,6 +271,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             if (layer == 0) {
                 data = (int*)get_linklist0(curNodeNum);
             } else {
+                //当前点的邻居
                 data = (int*)get_linklist(curNodeNum, layer);
 //                    data = (int *) (linkLists_[curNodeNum] + (layer - 1) * size_links_per_element_);
             }
@@ -996,6 +1008,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             lock_table.unlock();
 
             unmarkDeletedInternal(internal_id_replaced);
+            // update the feature vector associated with existing point with new vector
             updatePoint(data_point, internal_id_replaced, 1.0);
         }
     }
@@ -1166,9 +1179,11 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             // if so, updating it *instead* of creating a new element.
             std::unique_lock <std::mutex> lock_table(label_lookup_lock);
             auto search = label_lookup_.find(label);
+            //找到对应元素
             if (search != label_lookup_.end()) {
                 tableint existingInternalId = search->second;
                 if (allow_replace_deleted_) {
+                    //判断是否对当前id进行标记
                     if (isMarkedDeleted(existingInternalId)) {
                         throw std::runtime_error("Can't use addPoint to update deleted elements if replacement of deleted elements is enabled.");
                     }
@@ -1178,6 +1193,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 if (isMarkedDeleted(existingInternalId)) {
                     unmarkDeletedInternal(existingInternalId);
                 }
+                // update the feature vector associated with existing point with new vector
                 updatePoint(data_point, existingInternalId, 1.0);
 
                 return existingInternalId;
@@ -1191,8 +1207,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             cur_element_count++;
             label_lookup_[label] = cur_c;
         }
-
+        //cur_c是当前元素的索引，哈希表可以用索引反查元素
         std::unique_lock <std::mutex> lock_el(link_list_locks_[cur_c]);
+        //随机选取一个level
         int curlevel = getRandomLevel(mult_);
         if (level > 0)
             curlevel = level;
@@ -1205,15 +1222,18 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             templock.unlock();
         tableint currObj = enterpoint_node_;
         tableint enterpoint_copy = enterpoint_node_;
-
+        //为cur_c分配内存
+        //内存分配要考虑已有元素的内存大小，偏执以及当前所有元素的内存，赋0
         memset(data_level0_memory_ + cur_c * size_data_per_element_ + offsetLevel0_, 0, size_data_per_element_);
 
         // Initialisation of the data and label
         memcpy(getExternalLabeLp(cur_c), &label, sizeof(labeltype));
         memcpy(getDataByInternalId(cur_c), data_point, data_size_);
-
+        //curlevel!=0的情况下
         if (curlevel) {
+            //在linklists上为cur_c分配links所需要的内存
             linkLists_[cur_c] = (char *) malloc(size_links_per_element_ * curlevel + 1);
+            //内存不够
             if (linkLists_[cur_c] == nullptr)
                 throw std::runtime_error("Not enough memory: addPoint failed to allocate linklist");
             memset(linkLists_[cur_c], 0, size_links_per_element_ * curlevel + 1);
@@ -1221,18 +1241,24 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         if ((signed)currObj != -1) {
             if (curlevel < maxlevelcopy) {
+                //计算目标数据与当前遍历点之间的距离
                 dist_t curdist = fstdistfunc_(data_point, getDataByInternalId(currObj), dist_func_param_);
+                //从最高层开始遍历
                 for (int level = maxlevelcopy; level > curlevel; level--) {
+                    //从最上层开始找，一直到当前层，哪个点离目标点最近
                     bool changed = true;
                     while (changed) {
                         changed = false;
                         unsigned int *data;
                         std::unique_lock <std::mutex> lock(link_list_locks_[currObj]);
+                        //当前obj对应的链接点
                         data = get_linklist(currObj, level);
+                        //链接点的内存空间
                         int size = getListCount(data);
 
                         tableint *datal = (tableint *) (data + 1);
                         for (int i = 0; i < size; i++) {
+                            //遍历每一个链接点，找到离目标点最近的点
                             tableint cand = datal[i];
                             if (cand < 0 || cand > max_elements_)
                                 throw std::runtime_error("cand error");
